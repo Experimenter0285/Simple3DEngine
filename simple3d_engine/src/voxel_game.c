@@ -4,6 +4,7 @@
 // uses the public engine API.
 #include "../include/s3d_voxel_game.h"
 #include "../include/simple3d_engine.h"
+#include "../include/s3d_html_ui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,9 @@
 #define SPRINT_SPEED  7.0f
 #define JUMP_SPEED    6.2f
 #define GRAVITY       19.6f
+#define WORLD_HEIGHT  48
+#define WATER_LEVEL   10
+#define UNDO_CAP      512
 
 struct s3d_voxel_game {
     s3d_engine* engine;
@@ -31,13 +35,23 @@ struct s3d_voxel_game {
     float vx, vy, vz;
     float yaw, pitch;      // radians
     bool32 on_ground;
+    bool32 fly_mode;
 
     // Selection & inventory
     int32 sel_x, sel_y, sel_z;
     s3d_vec3 sel_normal;
     bool32 has_target;
-    uint8 hotbar[5];
+    uint8 hotbar[8];
     int32 hotbar_index;
+
+    // Tools: 0 = break/place, 1 = sphere brush, 2 = cube brush
+    int tool;
+    float brush_radius;
+
+    // Undo history (block-level edits)
+    struct { int32 x, y, z; uint8 before, after; } undo[UNDO_CAP];
+    int undo_head;
+    int undo_count;
 
     // Timing for FPS display
     float fps_timer;
@@ -52,58 +66,40 @@ struct s3d_voxel_game {
 };
 
 // ---------------------------------------------------------------------------
-static void place_structure(s3d_voxel_world* w) {
-    // A small brick house with a wooden roof to show off editing.
-    int cx = 34, cz = 34;
-    int gy = 0;
-    while (gy < 32 && s3d_voxel_get(w, cx, gy, cz) == 0) gy++;
-    if (gy == 0) gy = 6;
-    for (int x = cx - 4; x <= cx + 4; x++)
-    for (int z = cz - 4; z <= cz + 4; z++) {
-        bool32 edge = (x == cx - 4 || x == cx + 4 || z == cz - 4 || z == cz + 4);
-        int y0 = s3d_voxel_get(w, x, gy, z) ? gy : gy;
-        if (edge) {
-            for (int y = 1; y <= 4; y++) {
-                // doorway
-                if (z == cz - 4 && y <= 3 && x >= cx - 1 && x <= cx + 1) continue;
-                s3d_voxel_set(w, x, y0 + y, z, S3D_BLOCK_BRICK);
-            }
-        }
-        if (y0 + 5 > 0) { /* roof below */ }
-    }
-    for (int x = cx - 4; x <= cx + 4; x++)
-    for (int z = cz - 4; z <= cz + 4; z++)
-        s3d_voxel_set(w, x, gy + 5, z, S3D_BLOCK_WOOD);
-}
-
 s3d_voxel_game* s3d_voxel_game_create(s3d_engine* engine, uint32 seed, bool32 autopilot) {
     s3d_voxel_game* g = (s3d_voxel_game*)calloc(1, sizeof(*g));
     if (!g) return NULL;
     g->engine = engine;
     g->autopilot = autopilot;
 
-    g->world = s3d_voxel_create(64, 32, 64);
+    // Infinite streaming world! Terrain appears as the player walks.
+    g->world = s3d_voxel_create_infinite(WORLD_HEIGHT, seed ? seed : 20261026u, WATER_LEVEL);
     if (!g->world) { free(g); return NULL; }
-    s3d_voxel_generate_terrain(g->world, seed, 6);
-    place_structure(g->world);
-    s3d_voxel_rebuild_mesh(g->world);
-    printf("SimpleCraft: world built, %d triangles visible\n", s3d_voxel_triangle_count(g->world));
 
-    // Spawn above terrain at map center
-    int sx = 32, sz = 32, sy = 31;
-    while (sy > 0 && s3d_voxel_get(g->world, sx, sy, sz) == 0) sy--;
-    g->px = (float)sx + 0.5f;
+    // Spawn above deterministic terrain near the origin.
+    int sy = s3d_voxel_terrain_height(g->world, 0, 0);
+    g->px = 0.5f; g->pz = 0.5f;
     g->py = (float)(sy + 1) + 0.05f;
-    g->pz = (float)sz + 0.5f;
     g->yaw = (float)(M_PI * 0.25);
     g->pitch = -0.15f;
+
+    // Pre-stream chunks around spawn so the first frame is complete.
+    s3d_vec3 spawn = { g->px, g->py, g->pz };
+    for (int i = 0; i < 60; i++) s3d_voxel_update(g->world, spawn, 0.05f);
 
     g->hotbar[0] = S3D_BLOCK_GRASS;
     g->hotbar[1] = S3D_BLOCK_DIRT;
     g->hotbar[2] = S3D_BLOCK_STONE;
     g->hotbar[3] = S3D_BLOCK_BRICK;
     g->hotbar[4] = S3D_BLOCK_WOOD;
-    snprintf(g->status_line, sizeof(g->status_line), "SimpleCraft - WASD move, mouse look, LMB break, RMB place");
+    g->hotbar[5] = S3D_BLOCK_SAND;
+    g->hotbar[6] = S3D_BLOCK_LEAVES;
+    g->hotbar[7] = S3D_BLOCK_WATER;
+    g->brush_radius = 2.5f;
+    snprintf(g->status_line, sizeof(g->status_line),
+             "SimpleCraft sandbox - infinite world. F=fly G=tool Z=undo T=brush");
+    printf("SimpleCraft: infinite world ready, %d triangles streamed\n",
+           s3d_voxel_triangle_count(g->world));
     return g;
 }
 
@@ -166,13 +162,21 @@ static void update_player(s3d_voxel_game* g, float dt) {
     if (s3d_is_key_down(S3D_KEY_D) || s3d_is_key_down(S3D_KEY_RIGHT)) side += 1.0f;
 
     if (g->autopilot) {
-        // Gentle orbit + bob for headless demo frames
+        // Gentle orbit walk for headless demo frames; cruise in fly later
         g->auto_t += dt;
-        g->yaw += dt * 0.15f;
-        fwd = 0.6f;
+        g->yaw += dt * 0.12f;
+        fwd = 0.8f;
+        if (g->auto_t > 6.0f && !g->fly_mode) g->fly_mode = S3D_TRUE;
+    }
+
+    if (s3d_is_key_pressed(S3D_KEY_F)) {
+        g->fly_mode = !g->fly_mode;
+        snprintf(g->status_line, sizeof(g->status_line), "Fly mode: %s",
+                 g->fly_mode ? "ON (SPACE up / Q down)" : "OFF");
     }
 
     float speed = (s3d_is_key_down(S3D_KEY_LSHIFT) || s3d_is_key_down(S3D_KEY_RSHIFT)) ? SPRINT_SPEED : WALK_SPEED;
+    if (g->fly_mode) speed *= 2.0f;
     float sy = sinf(g->yaw), cy = cosf(g->yaw);
     // forward = (-sin(yaw), 0, -cos(yaw)) like a -Z-facing camera
     float wx = (-sy * fwd + cy * side);
@@ -181,12 +185,16 @@ static void update_player(s3d_voxel_game* g, float dt) {
     if (wl > 0.001f) { wx = wx / wl * speed; wz = wz / wl * speed; }
 
     g->vx = wx; g->vz = wz;
-    g->vy -= GRAVITY * dt;
-
-    // Jump
-    if ((s3d_is_key_pressed(S3D_KEY_SPACE)) && g->on_ground) {
-        g->vy = JUMP_SPEED;
-        g->on_ground = S3D_FALSE;
+    if (g->fly_mode) {
+        g->vy = 0.0f;
+        if (s3d_is_key_down(S3D_KEY_SPACE)) g->vy = speed;
+        if (s3d_is_key_down(S3D_KEY_Q))     g->vy = -speed;
+    } else {
+        g->vy -= GRAVITY * dt;
+        if (s3d_is_key_pressed(S3D_KEY_SPACE) && g->on_ground) {
+            g->vy = JUMP_SPEED;
+            g->on_ground = S3D_FALSE;
+        }
     }
 
     bool32 was_ground = g->on_ground;
@@ -195,11 +203,14 @@ static void update_player(s3d_voxel_game* g, float dt) {
     if (!was_ground && g->on_ground && g->vy < -8.0f)
         snprintf(g->status_line, sizeof(g->status_line), "Ouch! Landed hard (%.1f m/s)", -g->vy);
 
-    // Keep inside the map
-    if (g->py < -10.0f) { g->px = 32.5f; g->py = 30.0f; g->pz = 32.5f; g->vy = 0; }
+    // Never fall out of the world: respawn on the terrain column below.
+    if (g->py < -10.0f) {
+        int th = s3d_voxel_terrain_height(g->world, (int)g->px, (int)g->pz);
+        g->py = (float)(th + 2); g->vy = 0;
+    }
 }
 
-static void update_selection(s3d_voxel_game* g, s3d_renderer* renderer) {
+static void update_selection(s3d_voxel_game* g) {
     s3d_camera_state cs; s3d_get_camera_state(renderer, &cs);
     S3D_UNUSED(cs);
     // Ray from eye along view direction derived from yaw/pitch
@@ -211,12 +222,70 @@ static void update_selection(s3d_voxel_game* g, s3d_renderer* renderer) {
                                       &g->sel_normal, NULL);
 }
 
+static void push_undo(s3d_voxel_game* g, int32 x, int32 y, int32 z, uint8 before, uint8 after) {
+    int i = g->undo_head;
+    g->undo_head = (g->undo_head + 1) % UNDO_CAP;
+    g->undo[i].x = x; g->undo[i].y = y; g->undo[i].z = z;
+    g->undo[i].before = before; g->undo[i].after = after;
+    if (g->undo_count < UNDO_CAP) g->undo_count++;
+}
+
+static void set_block_recorded(s3d_voxel_game* g, int32 x, int32 y, int32 z, uint8 b) {
+    uint8 before = s3d_voxel_get(g->world, x, y, z);
+    if (before == b) return;
+    s3d_voxel_set(g->world, x, y, z, b);
+    push_undo(g, x, y, z, before, b);
+}
+
+static void do_undo(s3d_voxel_game* g) {
+    if (g->undo_count == 0) {
+        snprintf(g->status_line, sizeof(g->status_line), "Nothing to undo");
+        return;
+    }
+    g->undo_count--;
+    int i = (g->undo_head + UNDO_CAP - 1 - g->undo_count) % UNDO_CAP;
+    s3d_voxel_set(g->world, g->undo[i].x, g->undo[i].y, g->undo[i].z, g->undo[i].before);
+    snprintf(g->status_line, sizeof(g->status_line), "Undo: restored (%d,%d,%d) -> block %d",
+             g->undo[i].x, g->undo[i].y, g->undo[i].z, g->undo[i].before);
+}
+
+// Paint a ball or box of blocks around the target cell (sandbox tool).
+static void paint_brush(s3d_voxel_game* g, bool32 cube) {
+    int cx = g->sel_x, cy = g->sel_y, cz = g->sel_z;
+    int r = (int)g->brush_radius;
+    uint8 b = g->hotbar[g->hotbar_index];
+    int placed = 0;
+    for (int dx = -r; dx <= r; dx++)
+    for (int dy = -r; dy <= r; dy++)
+    for (int dz = -r; dz <= r; dz++) {
+        if (!cube && (dx*dx + dy*dy + dz*dz) > r*r) continue;
+        int x = cx + dx, y = cy + dy, z = cz + dz;
+        if (y < 0 || y >= WORLD_HEIGHT) continue;
+        // don't entomb the player
+        if (fabsf((float)x + 0.5f - g->px) < PLAYER_RADIUS + 0.6f &&
+            fabsf((float)z + 0.5f - g->pz) < PLAYER_RADIUS + 0.6f &&
+            y + 1 > g->py && y < g->py + PLAYER_HEIGHT) continue;
+        set_block_recorded(g, x, y, z, b);
+        placed++;
+    }
+    snprintf(g->status_line, sizeof(g->status_line), "%s brush: %d blocks of #%d",
+             cube ? "Cube" : "Sphere", placed, b);
+}
+
 static void handle_mouse_actions(s3d_voxel_game* g) {
     if (!g->has_target) return;
-    if (s3d_is_mouse_pressed(S3D_MOUSE_LEFT)) {          // break block
-        s3d_voxel_set(g->world, g->sel_x, g->sel_y, g->sel_z, 0);
-        s3d_voxel_rebuild_mesh(g->world);
-        snprintf(g->status_line, sizeof(g->status_line), "Broke block at (%d,%d,%d)", g->sel_x, g->sel_y, g->sel_z);
+    if (s3d_is_mouse_pressed(S3D_MOUSE_LEFT)) {
+        switch (g->tool) {
+            case 0: { // break block
+                uint8 before = s3d_voxel_get(g->world, g->sel_x, g->sel_y, g->sel_z);
+                s3d_voxel_set(g->world, g->sel_x, g->sel_y, g->sel_z, 0);
+                push_undo(g, g->sel_x, g->sel_y, g->sel_z, before, 0);
+                snprintf(g->status_line, sizeof(g->status_line), "Broke block at (%d,%d,%d)",
+                         g->sel_x, g->sel_y, g->sel_z);
+                break; }
+            case 1: paint_brush(g, S3D_FALSE); break;
+            case 2: paint_brush(g, S3D_TRUE);  break;
+        }
     }
     if (s3d_is_mouse_pressed(S3D_MOUSE_RIGHT)) {         // place block
         int nx = g->sel_x + (int)g->sel_normal.x;
@@ -227,8 +296,7 @@ static void handle_mouse_actions(s3d_voxel_game* g) {
         if (!(nx + 1 > g->px - r && nx < g->px + r &&
               ny + 1 > g->py && ny < g->py + PLAYER_HEIGHT &&
               nz + 1 > g->pz - r && nz < g->pz + r)) {
-            s3d_voxel_set(g->world, nx, ny, nz, g->hotbar[g->hotbar_index]);
-            s3d_voxel_rebuild_mesh(g->world);
+            set_block_recorded(g, nx, ny, nz, g->hotbar[g->hotbar_index]);
             snprintf(g->status_line, sizeof(g->status_line), "Placed block #%d at (%d,%d,%d)",
                      g->hotbar[g->hotbar_index], nx, ny, nz);
         }
@@ -236,12 +304,44 @@ static void handle_mouse_actions(s3d_voxel_game* g) {
 }
 
 static void handle_hotbar_keys(s3d_voxel_game* g) {
-    static const s3d_key digits[5] = { S3D_KEY_1, S3D_KEY_2, S3D_KEY_3, S3D_KEY_4, S3D_KEY_5 };
-    for (int i = 0; i < 5; i++)
+    static const s3d_key digits[8] = { S3D_KEY_1, S3D_KEY_2, S3D_KEY_3, S3D_KEY_4,
+                                       S3D_KEY_5, S3D_KEY_6, S3D_KEY_7, S3D_KEY_8 };
+    for (int i = 0; i < 8; i++)
         if (s3d_is_key_pressed(digits[i])) g->hotbar_index = i;
     float wheel = s3d_get_mouse_wheel();
-    if (wheel > 0) g->hotbar_index = (g->hotbar_index + 4) % 5;
-    if (wheel < 0) g->hotbar_index = (g->hotbar_index + 1) % 5;
+    if (wheel > 0) g->hotbar_index = (g->hotbar_index + 7) % 8;
+    if (wheel < 0) g->hotbar_index = (g->hotbar_index + 1) % 8;
+    if (s3d_is_key_pressed(S3D_KEY_G)) {
+        g->tool = (g->tool + 1) % 3;
+        static const char* names[3] = { "Break/Place", "Sphere brush", "Cube brush" };
+        snprintf(g->status_line, sizeof(g->status_line), "Tool: %s", names[g->tool]);
+    }
+    if (s3d_is_key_pressed(S3D_KEY_Z)) do_undo(g);
+    if (s3d_is_key_pressed(S3D_KEY_T)) {
+        g->brush_radius += 1.0f;
+        if (g->brush_radius > 6.0f) g->brush_radius = 1.0f;
+        snprintf(g->status_line, sizeof(g->status_line), "Brush radius: %.1f", g->brush_radius);
+    }
+}
+
+static const char* g_tool_names[3] = { "Break/Place", "Sphere", "Cube" };
+
+// Push live stats into the HTML UI document (CSS-styled panorama overlay).
+static void sync_html_ui(s3d_voxel_game* g) {
+    s3d_script_context* ctx = s3d_get_main_script_context();
+    if (!ctx || !s3d_html_ui_is_loaded(ctx)) return;
+    char buf[192];
+    snprintf(buf, sizeof(buf), "%.0f", g->fps_value);
+    s3d_html_ui_set_text(ctx, "#fps", buf);
+    snprintf(buf, sizeof(buf), "%.1f %.1f %.1f", g->px, g->py, g->pz);
+    s3d_html_ui_set_text(ctx, "#pos", buf);
+    snprintf(buf, sizeof(buf), "%d", s3d_voxel_triangle_count(g->world));
+    s3d_html_ui_set_text(ctx, "#tris", buf);
+    s3d_html_ui_set_text(ctx, "#status", g->status_line);
+    s3d_html_ui_set_text(ctx, "#mode", g->fly_mode ? "FLY" : "WALK");
+    s3d_html_ui_set_text(ctx, "#sel",
+        g->has_target ? block_name(s3d_voxel_get(g->world, g->sel_x, g->sel_y, g->sel_z)) : "-");
+    s3d_html_ui_set_text(ctx, "#tool", g_tool_names[g->tool]);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,8 +394,8 @@ static void draw_hud(s3d_voxel_game* g, s3d_renderer* renderer, int32 w, int32 h
 
     // Hotbar
     int slot = 24;
-    int bx = w / 2 - (5 * slot) / 2;
-    for (int i = 0; i < 5; i++) {
+    int bx = w / 2 - (8 * slot) / 2;
+    for (int i = 0; i < 8; i++) {
         s3d_rect rc = { (float)bx + i * slot + 2, (float)(h - slot - 6), (float)slot - 4, (float)slot - 4 };
         const s3d_block_style* st = s3d_voxel_block_styles();
         s3d_color c = st[g->hotbar[i]].top;
@@ -331,7 +431,14 @@ void s3d_voxel_game_frame(s3d_voxel_game* g, float dt) {
 
     handle_hotbar_keys(g);
     update_player(g, dt);
+
+    // Stream infinite terrain around the camera (budgeted per frame).
+    s3d_vec3 cam_pos = { g->px, g->py, g->pz };
+    s3d_voxel_update(g->world, cam_pos, dt);
+
+    update_selection(g);
     handle_mouse_actions(g);
+    sync_html_ui(g);
 
     // ---- Render ----
     s3d_begin_frame(g->engine); // clears framebuffer
@@ -355,14 +462,16 @@ void s3d_voxel_game_frame(s3d_voxel_game* g, float dt) {
 
     s3d_voxel_draw(g->world, renderer);
 
-    // Selection highlight (projected wireframe cube)
-    update_selection(g, renderer);
+    // Selection highlight (wireframe cube)
     if (g->has_target) {
         s3d_color hl = {1.0f, 1.0f, 0.2f, 1.0f};
         draw_wire_cube(renderer, g->sel_x, g->sel_y, g->sel_z, hl);
     }
 
     draw_hud(g, renderer, w, h);
+
+    // Panorama UI layer (HTML/CSS) composited over the 3D scene.
+    s3d_html_ui_render(renderer, w, h);
 
     s3d_end_frame(g->engine);
 }

@@ -31,15 +31,41 @@ typedef struct {
 
 typedef struct s3d_voxel_world s3d_voxel_world;
 
+#define S3D_CHUNK_SIZE 16   // chunks are 16 x world_height x 16 cells
+
 // World -----------------------------------------------------------------
+// Finite world (back-compat wrapper around the streaming infinite world):
+// exactly size_x x size_y x size_z cells, no generation outside.
 s3d_voxel_world* s3d_voxel_create(int32 size_x, int32 size_y, int32 size_z);
+
+// Infinite world: terrain is generated lazily per 16x16 chunk (XZ plane) as
+// the camera approaches; chunks far away are unloaded. Y stays bounded to
+// world_height. Returns NULL on failure.
+s3d_voxel_world* s3d_voxel_create_infinite(int32 world_height, uint32 seed, int32 water_level);
 void             s3d_voxel_destroy(s3d_voxel_world* w);
 
 uint8 s3d_voxel_get(const s3d_voxel_world* w, int32 x, int32 y, int32 z);
 void  s3d_voxel_set(s3d_voxel_world* w, int32 x, int32 y, int32 z, uint8 block);
 
-// Terrain generation (value-noise heightmap, trees, sand near water level).
+// Terrain generation for the finite world (value-noise heightmap, trees,
+// sand near water level). For infinite worlds use s3d_voxel_create_infinite.
 void s3d_voxel_generate_terrain(s3d_voxel_world* w, uint32 seed, int32 water_level);
+
+// Streaming update (infinite worlds only; no-op for finite ones).
+// Ensures every chunk within load_radius of the camera exists and has a mesh,
+// unloads chunks beyond load_radius + 1. Call once per frame with dt.
+void s3d_voxel_update(s3d_voxel_world* w, s3d_vec3 camera_pos, float32 dt);
+
+// Edit the world through a callback over an AABB (used by sandbox tools).
+typedef void (*s3d_voxel_edit_fn)(int32 x, int32 y, int32 z, void* user);
+void s3d_voxel_for_each_in_aabb(s3d_voxel_world* w,
+                                int32 x0, int32 y0, int32 z0,
+                                int32 x1, int32 y1, int32 z1,
+                                s3d_voxel_edit_fn fn, void* user);
+
+// Deterministic terrain height at (x,z) — same value whether or not the
+// chunk is loaded (used for spawning and by Lua/HTML tooling).
+int32 s3d_voxel_terrain_height(const s3d_voxel_world* w, int32 x, int32 z);
 
 // Style table -----------------------------------------------------------
 const s3d_block_style* s3d_voxel_block_styles(void);        // default styles
