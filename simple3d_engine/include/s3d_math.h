@@ -67,6 +67,10 @@ static inline float32 s3d_vec3_length(s3d_vec3 v) {
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
+static inline float32 s3d_vec3_length_sq(s3d_vec3 v) {
+    return v.x * v.x + v.y * v.y + v.z * v.z;
+}
+
 static inline s3d_vec3 s3d_vec3_normalize(s3d_vec3 v) {
     float32 len = s3d_vec3_length(v);
     if (len > 0.0f) {

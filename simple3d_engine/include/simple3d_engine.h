@@ -45,8 +45,6 @@ float32 s3d_get_delta_time(s3d_engine* engine);
 float32 s3d_get_time(s3d_engine* engine);
 uint32 s3d_get_frame_count(s3d_engine* engine);
 
-// Convenience macros
-#define S3D_UNUSED(x) ((void)(x))
 
 #ifdef __cplusplus
 }

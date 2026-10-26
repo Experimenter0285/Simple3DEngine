@@ -230,7 +230,7 @@ int32 s3d_poll_events(s3d_window* window, s3d_event* events, int32 max_events) {
     return count;
 }
 
-float32 s3d_get_time(void) {
+float32 s3d_platform_get_time(void) {
     if (g_sdl_initialized) return (float32)SDL_GetTicks() * 0.001f;
 #if defined(S3D_WINDOWS)
     {

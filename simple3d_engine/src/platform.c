@@ -212,6 +212,8 @@ void* s3d__window_get_pixels(s3d_window* window, int32* w, int32* h, int32* pitc
         if (pitch) *pitch = window->pitch;
         return window->pixels;
     }
+#else
+    S3D_UNUSED(w); S3D_UNUSED(h); S3D_UNUSED(pitch);
 #endif
     return NULL; // headless -> renderer keeps its own offscreen framebuffer
 }
@@ -236,6 +238,7 @@ void s3d_make_context_current(s3d_window* window) {
 
 int32 s3d_poll_events(s3d_window* window, s3d_event* events, int32 max_events) {
     if (!window || !events || max_events <= 0) return 0;
+    S3D_UNUSED(window);
     int32 count = 0;
 
 #ifdef S3D_HAS_X11
@@ -295,14 +298,15 @@ int32 s3d_poll_events(s3d_window* window, s3d_event* events, int32 max_events) {
     }
 #endif
 
-    // Headless: honour the quit env-var so scripted demos can exit cleanly.
-    if (getenv("S3D_HEADLESS_FRAMES") == NULL) {
-        events[0].type = S3D_EVENT_NONE;
-    }
+#ifndef S3D_HAS_X11
+    S3D_UNUSED(count);
+#endif
+
+    // Headless fallback: no event source, nothing to report.
     return 0;
 }
 
-float32 s3d_get_time(void) {
+float32 s3d_platform_get_time(void) {
 #if defined(S3D_WINDOWS)
     {
         static LARGE_INTEGER freq; static bool32 inited = S3D_FALSE;

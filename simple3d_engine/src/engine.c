@@ -1,9 +1,42 @@
 // Simple3DEngine - Main Engine Implementation
 
 #include "../include/simple3d_engine.h"
+#include "renderer_common.h"
+#include "s3d_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// ---------------------------------------------------------------------------
+// Renderer factory: dispatches to the software or OpenGL 1.x / ES 1.0 backend.
+// AUTO tries OpenGL when the window has a GL context, otherwise falls back
+// to the pure-CPU rasterizer (works everywhere, even without any GPU).
+// ---------------------------------------------------------------------------
+s3d_renderer* s3d_create_renderer(s3d_window* window, s3d_renderer_type type) {
+    if (type == S3D_RENDERER_AUTO) {
+        type = (window && s3d__window_is_opengl(window))
+                   ? S3D_RENDERER_OPENGL_1_0
+                   : S3D_RENDERER_SOFTWARE;
+    }
+
+    s3d_renderer* r = NULL;
+    switch (type) {
+        case S3D_RENDERER_SOFTWARE:
+            r = s3d__create_renderer_software(window);
+            break;
+        case S3D_RENDERER_OPENGL_1_0:
+        case S3D_RENDERER_OPENGL_ES_1_0:
+            r = s3d__create_renderer_gl(window, type);
+            if (!r) {
+                printf("Simple3DEngine: OpenGL unavailable, falling back to software renderer\n");
+                r = s3d__create_renderer_software(window);
+            }
+            break;
+        default:
+            break;
+    }
+    return r;
+}
 
 s3d_engine* s3d_init(const s3d_window_params* params) {
     printf("========================================\n");
@@ -24,14 +57,8 @@ s3d_engine* s3d_init(const s3d_window_params* params) {
         return NULL;
     }
     
-    // Determine renderer type
+    // Renderer type (S3D_RENDERER_AUTO is resolved inside s3d_create_renderer)
     s3d_renderer_type renderer_type = params->renderer_hint;
-    if (renderer_type == S3D_RENDERER_AUTO) {
-        // Auto-detect: Try OpenGL first, fall back to software
-        printf("Auto-detecting renderer...\n");
-        printf("Note: For now using software renderer\n");
-        renderer_type = S3D_RENDERER_SOFTWARE;
-    }
     
     // Create renderer
     s3d_renderer* renderer = s3d_create_renderer(window, renderer_type);
@@ -113,19 +140,19 @@ void s3d_begin_frame(s3d_engine* engine) {
     if (!engine) return;
     
     // Calculate delta time
-    float32 current_time = s3d_get_time();
+    float32 current_time = s3d_platform_get_time();
     engine->delta_time = current_time - engine->time;
     engine->time = current_time;
     
     // Clear screen
     s3d_clear(engine->renderer);
-    s3d_begin_frame(engine->renderer);
+    s3d_renderer_begin_frame(engine->renderer);
 }
 
 void s3d_end_frame(s3d_engine* engine) {
     if (!engine) return;
     
-    s3d_end_frame(engine->renderer);
+    s3d_renderer_end_frame(engine->renderer);
     s3d_swap_buffers(engine->window);
     
     engine->frame_count++;

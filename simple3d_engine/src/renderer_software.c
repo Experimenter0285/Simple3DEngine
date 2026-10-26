@@ -38,10 +38,14 @@ static inline sw_renderer* SW(s3d_renderer* r) { return (sw_renderer*)r; }
 // Pixel packing / blending
 // ---------------------------------------------------------------------------
 static inline uint32 pack_rgba(float32 r, float32 g, float32 b, float32 a) {
-    if (r < 0) r = 0; if (r > 1) r = 1;
-    if (g < 0) g = 0; if (g > 1) g = 1;
-    if (b < 0) b = 0; if (b > 1) b = 1;
-    if (a < 0) a = 0; if (a > 1) a = 1;
+    if (r < 0) r = 0;
+    if (r > 1) r = 1;
+    if (g < 0) g = 0;
+    if (g > 1) g = 1;
+    if (b < 0) b = 0;
+    if (b > 1) b = 1;
+    if (a < 0) a = 0;
+    if (a > 1) a = 1;
     uint32 ri = (uint32)(r * 255.0f);
     uint32 gi = (uint32)(g * 255.0f);
     uint32 bi = (uint32)(b * 255.0f);
@@ -161,7 +165,7 @@ void s3d_clear(s3d_renderer* renderer) {
     }
 }
 
-void s3d_begin_frame(s3d_renderer* renderer) {
+void s3d_renderer_begin_frame(s3d_renderer* renderer) {
     if (!renderer) return;
     renderer->stats.draw_calls = 0;
     renderer->stats.triangles_rendered = 0;
@@ -171,7 +175,7 @@ void s3d_begin_frame(s3d_renderer* renderer) {
     renderer->matrix_stack_top = 0;
 }
 
-void s3d_end_frame(s3d_renderer* renderer) {
+void s3d_renderer_end_frame(s3d_renderer* renderer) {
     if (!renderer) return;
     if (SW(renderer)->framebuffer.present_to_window && renderer->window) {
         s3d__window_update(renderer->window); // push surface to screen (SDL/X11)
@@ -451,8 +455,10 @@ static void fill_rect_fb(s3d_renderer* renderer, float32 x, float32 y, float32 w
                 float32 tv = v0 + (v1 - v0) * fv;
                 int32 tx = (int32)(tu * tex->width);
                 int32 ty = (int32)(tv * tex->height);
-                if (tx < 0) tx = 0; if (tx >= tex->width)  tx = tex->width - 1;
-                if (ty < 0) ty = 0; if (ty >= tex->height) ty = tex->height - 1;
+                if (tx < 0) tx = 0;
+                if (tx >= tex->width)  tx = tex->width - 1;
+                if (ty < 0) ty = 0;
+                if (ty >= tex->height) ty = tex->height - 1;
                 uint32 tc = ((const uint32*)tex->data)[(size_t)ty * tex->width + tx];
                 float32 tr, tg, tb, ta;
                 unpack_rgba(tc, &tr, &tg, &tb, &ta);

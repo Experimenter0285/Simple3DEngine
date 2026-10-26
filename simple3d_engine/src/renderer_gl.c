@@ -157,7 +157,7 @@ void s3d_clear(s3d_renderer* renderer) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
-void s3d_begin_frame(s3d_renderer* renderer) {
+void s3d_renderer_begin_frame(s3d_renderer* renderer) {
     if (!renderer) return;
     renderer->stats.draw_calls = 0;
     renderer->stats.triangles_rendered = 0;
@@ -168,7 +168,7 @@ void s3d_begin_frame(s3d_renderer* renderer) {
     glLoadIdentity();
 }
 
-void s3d_end_frame(s3d_renderer* renderer) {
+void s3d_renderer_end_frame(s3d_renderer* renderer) {
     if (!renderer) return;
     // Presentation happens in s3d_swap_buffers() at the platform layer.
     glFlush();

@@ -61,8 +61,9 @@ s3d_renderer_type s3d_get_active_renderer_type(s3d_renderer* renderer);
 // State management
 void s3d_set_clear_color(s3d_renderer* renderer, s3d_color color);
 void s3d_clear(s3d_renderer* renderer);
-void s3d_begin_frame(s3d_renderer* renderer);
-void s3d_end_frame(s3d_renderer* renderer);
+// Frame helpers (renderer-level). Engine-level wrappers live in simple3d_engine.h.
+void s3d_renderer_begin_frame(s3d_renderer* renderer);
+void s3d_renderer_end_frame(s3d_renderer* renderer);
 
 // Matrix operations
 void s3d_push_matrix(s3d_renderer* renderer);

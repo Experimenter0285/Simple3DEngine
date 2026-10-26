@@ -218,6 +218,8 @@ static void update_transform_recursive(s3d_game_object* obj) {
     }
 }
 
+static void s3d_update_physics(float32 fixed_dt);
+
 void s3d_update_scene(float32 delta_time) {
     // Fixed-timestep physics accumulator: run N deterministic physics steps per
     // rendered frame (classic Quake-style pattern; safe on slow old hardware).
@@ -292,7 +294,7 @@ bool32 s3d_check_collision(s3d_game_object* a, s3d_game_object* b) {
            amin.z <= bmax.z && amax.z >= bmin.z;
 }
 
-void s3d_update_physics(float32 fixed_dt) {
+static void s3d_update_physics(float32 fixed_dt) {
     if (fixed_dt <= 0.0f) return;
 
     for (s3d_game_object* obj = g_scene_root; obj; obj = obj->next_sibling) {
@@ -455,4 +457,16 @@ s3d_mat4 s3d_get_world_matrix(s3d_game_object* obj) {
     }
     
     return world;
+}
+
+// ---------------------------------------------------------------------------
+// Default collision callbacks (weak symbols). A game binary or the Lua
+// scripting layer can provide strong definitions to override these.
+// ---------------------------------------------------------------------------
+__attribute__((weak)) void s3d_on_collision(s3d_game_object* self, s3d_game_object* other) {
+    S3D_UNUSED(self); S3D_UNUSED(other);
+}
+
+__attribute__((weak)) void s3d_on_trigger_enter(s3d_game_object* self, s3d_game_object* other) {
+    S3D_UNUSED(self); S3D_UNUSED(other);
 }

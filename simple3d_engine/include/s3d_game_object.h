@@ -156,6 +156,19 @@ void s3d_rotate_local(s3d_game_object* obj, float32 x_deg, float32 y_deg, float3
 // Get world matrix
 s3d_mat4 s3d_get_world_matrix(s3d_game_object* obj);
 
+// Collision queries
+bool32 s3d_check_collision(s3d_game_object* a, s3d_game_object* b);
+
+// Physics tuning
+void s3d_set_fixed_timestep(float32 dt);
+float32 s3d_get_fixed_timestep(void);
+void s3d_set_gravity(s3d_vec3 gravity);
+
+// Collision callbacks (weak symbols: the game or the Lua layer may override
+// them; default implementations are no-ops).
+__attribute__((weak)) void s3d_on_collision(s3d_game_object* self, s3d_game_object* other);
+__attribute__((weak)) void s3d_on_trigger_enter(s3d_game_object* self, s3d_game_object* other);
+
 #ifdef __cplusplus
 }
 #endif

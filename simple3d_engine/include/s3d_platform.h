@@ -102,7 +102,9 @@ s3d_window* s3d_create_window(const s3d_window_params* params);
 void s3d_destroy_window(s3d_window* window);
 void s3d_swap_buffers(s3d_window* window);
 int32 s3d_poll_events(s3d_window* window, s3d_event* events, int32 max_events);
-float32 s3d_get_time(void);
+// Raw platform clock (seconds since engine-ish epoch). Named distinctly from
+// the engine-level s3d_get_time(s3d_engine*) in simple3d_engine.h.
+float32 s3d_platform_get_time(void);
 void s3d_sleep(uint32 milliseconds);
 bool32 s3d_window_should_close(s3d_window* window);
 void s3d_set_title(s3d_window* window, const char* title);

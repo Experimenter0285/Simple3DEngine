@@ -32,6 +32,9 @@ typedef enum {
     S3D_ERROR_MEMORY = -5,
 } s3d_result;
 
+// Utility macros
+#define S3D_UNUSED(x) ((void)(x))
+
 // Version info
 #define S3D_VERSION_MAJOR 1
 #define S3D_VERSION_MINOR 0
