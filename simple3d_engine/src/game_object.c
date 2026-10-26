@@ -1,13 +1,31 @@
 // Simple3DEngine - Game Object and Scene Management
 
 #include "../include/s3d_game_object.h"
+#include "renderer_common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 // Global scene state
 static s3d_game_object* g_scene_root = NULL;
 static uint32 g_next_script_id = 1;
+
+// Physics settings (classic fixed timestep for deterministic old-PC behaviour)
+static float32 g_physics_fixed_timestep = 1.0f / 60.0f;
+static float32 g_physics_accumulator = 0.0f;
+static s3d_vec3 g_gravity = {0.0f, -9.81f, 0.0f};
+
+void s3d_set_fixed_timestep(float32 dt) {
+    if (dt > 0.0f && dt < 1.0f) {
+        g_physics_fixed_timestep = dt;
+        g_physics_accumulator = 0.0f;
+    }
+}
+
+float32 s3d_get_fixed_timestep(void) { return g_physics_fixed_timestep; }
+
+void s3d_set_gravity(s3d_vec3 g) { g_gravity = g; }
 
 void s3d_init_scene(void) {
     g_scene_root = NULL;
@@ -201,8 +219,15 @@ static void update_transform_recursive(s3d_game_object* obj) {
 }
 
 void s3d_update_scene(float32 delta_time) {
-    S3D_UNUSED(delta_time);
-    
+    // Fixed-timestep physics accumulator: run N deterministic physics steps per
+    // rendered frame (classic Quake-style pattern; safe on slow old hardware).
+    g_physics_accumulator += delta_time;
+    int32 max_steps = 8; // spiral-of-death guard
+    while (g_physics_accumulator >= g_physics_fixed_timestep && max_steps-- > 0) {
+        s3d_update_physics(g_physics_fixed_timestep);
+        g_physics_accumulator -= g_physics_fixed_timestep;
+    }
+
     // Update all transforms
     s3d_game_object* obj = g_scene_root;
     while (obj) {
@@ -210,6 +235,117 @@ void s3d_update_scene(float32 delta_time) {
             update_transform_recursive(obj);
         }
         obj = obj->next_sibling;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Physics step: integrate rigidbodies, resolve collisions against static
+// colliders and report hits back through the collision callbacks.
+// ---------------------------------------------------------------------------
+static void get_world_aabb(s3d_game_object* obj, s3d_vec3* out_min, s3d_vec3* out_max) {
+    s3d_collider* c = obj->collider;
+
+    // Apply world transform to collider center (scale affects extents too).
+    s3d_mat4 w = s3d_get_world_matrix(obj);
+    const float32* m = w.m;
+    float32 cx = m[0]*c->center.x + m[4]*c->center.y + m[8]*c->center.z + m[12];
+    float32 cy = m[1]*c->center.x + m[5]*c->center.y + m[9]*c->center.z + m[13];
+    float32 cz = m[2]*c->center.x + m[6]*c->center.y + m[10]*c->center.z + m[14];
+
+    // Approximate scale from matrix basis vectors.
+    float32 sx = sqrtf(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+    float32 sy = sqrtf(m[4]*m[4] + m[5]*m[5] + m[6]*m[6]);
+    float32 sz = sqrtf(m[8]*m[8] + m[9]*m[9] + m[10]*m[10]);
+
+    if (c->type == S3D_COLLIDER_SPHERE) {
+        float32 r = c->radius * fmaxf(sx, fmaxf(sy, sz));
+        *out_min = s3d_vec3_create(cx - r, cy - r, cz - r);
+        *out_max = s3d_vec3_create(cx + r, cy + r, cz + r);
+    } else {
+        float32 hx = c->size.x * 0.5f * sx;
+        float32 hy = c->size.y * 0.5f * sy;
+        float32 hz = c->size.z * 0.5f * sz;
+        *out_min = s3d_vec3_create(cx - hx, cy - hy, cz - hz);
+        *out_max = s3d_vec3_create(cx + hx, cy + hy, cz + hz);
+    }
+}
+
+bool32 s3d_check_collision(s3d_game_object* a, s3d_game_object* b) {
+    if (!a || !b || !a->collider || !b->collider) return S3D_FALSE;
+
+    // Sphere-sphere exact test when both are spheres.
+    if (a->collider->type == S3D_COLLIDER_SPHERE && b->collider->type == S3D_COLLIDER_SPHERE) {
+        s3d_mat4 wa = s3d_get_world_matrix(a), wb = s3d_get_world_matrix(b);
+        s3d_vec3 ca = {wa.m[12], wa.m[13], wa.m[14]};
+        s3d_vec3 cb = {wb.m[12], wb.m[13], wb.m[14]};
+        float32 ra = a->collider->radius, rb = b->collider->radius;
+        s3d_vec3 d = s3d_vec3_sub(ca, cb);
+        return s3d_vec3_length_sq(d) <= (ra + rb) * (ra + rb);
+    }
+
+    // AABB overlap (box vs box, or conservative for mixed shapes).
+    s3d_vec3 amin, amax, bmin, bmax;
+    get_world_aabb(a, &amin, &amax);
+    get_world_aabb(b, &bmin, &bmax);
+    return amin.x <= bmax.x && amax.x >= bmin.x &&
+           amin.y <= bmax.y && amax.y >= bmin.y &&
+           amin.z <= bmax.z && amax.z >= bmin.z;
+}
+
+void s3d_update_physics(float32 fixed_dt) {
+    if (fixed_dt <= 0.0f) return;
+
+    for (s3d_game_object* obj = g_scene_root; obj; obj = obj->next_sibling) {
+        if (!obj->active || !obj->rigidbody || obj->rigidbody->is_kinematic) continue;
+        s3d_rigidbody* rb = obj->rigidbody;
+
+        // Forces -> acceleration (semi-implicit Euler: velocity first, then position)
+        s3d_vec3 accel = s3d_vec3_create(0, 0, 0);
+        if (rb->mass > 0.0f) accel = s3d_vec3_scale(rb->force, 1.0f / rb->mass);
+        if (rb->use_gravity) accel = s3d_vec3_add(accel, g_gravity);
+        rb->force = s3d_vec3_create(0, 0, 0); // forces are consumed per step
+
+        rb->velocity = s3d_vec3_add(rb->velocity, s3d_vec3_scale(accel, fixed_dt));
+        rb->velocity = s3d_vec3_scale(rb->velocity, rb->damping);
+
+        s3d_vec3 disp = s3d_vec3_scale(rb->velocity, fixed_dt);
+        s3d_translate_local(obj, disp.x, disp.y, disp.z);
+
+        if (!obj->collider) continue; // detection needs a collider
+
+        // Collision detection & simple response against other colliders
+        for (s3d_game_object* other = g_scene_root; other; other = other->next_sibling) {
+            if (other == obj || !other->active || !other->collider) continue;
+            if (!s3d_check_collision(obj, other)) continue;
+
+            if (other->collider->is_trigger || obj->collider->is_trigger) {
+                s3d_on_trigger_enter(obj, other);
+                continue;
+            }
+
+            // Resolve along the smallest penetration axis (positional fix, zero the
+            // velocity component into the contact).
+            s3d_vec3 amin, amax, bmin, bmax;
+            get_world_aabb(obj, &amin, &amax);
+            get_world_aabb(other, &bmin, &bmax);
+            float32 ox = fminf(amax.x - bmin.x, bmax.x - amin.x);
+            float32 oy = fminf(amax.y - bmin.y, bmax.y - amin.y);
+            float32 oz = fminf(amax.z - bmin.z, bmax.z - amin.z);
+
+            s3d_vec3 push = {0, 0, 0};
+            if (oy <= ox && oy <= oz) {
+                push.y = (obj->transform.position.y > other->transform.position.y) ? oy : -oy;
+                rb->velocity.y = 0;
+            } else if (ox <= oz) {
+                push.x = (obj->transform.position.x > other->transform.position.x) ? ox : -ox;
+                rb->velocity.x = 0;
+            } else {
+                push.z = (obj->transform.position.z > other->transform.position.z) ? oz : -oz;
+                rb->velocity.z = 0;
+            }
+            s3d_translate_local(obj, push.x, push.y, push.z);
+            s3d_on_collision(obj, other);
+        }
     }
 }
 
