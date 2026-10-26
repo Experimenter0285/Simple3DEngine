@@ -119,6 +119,25 @@ void s3d_enable_blending(s3d_renderer* renderer, bool32 enable);
 void s3d_draw_text(s3d_renderer* renderer, const char* text, float32 x, float32 y,
                    float32 scale, s3d_color color);
 
+// Transform a vertex by the renderer's current model-view-projection matrix
+// and project it to screen pixels. Returns S3D_FALSE if behind the camera.
+// Useful for drawing HUD markers anchored to world positions.
+bool32 s3d_project_vertex(s3d_renderer* renderer, s3d_vec3 world_pos, s3d_vec2* out_screen);
+
+// Current camera/view state maintained by the engine between frames so that
+// renderers can project world coordinates without the game re-supplying them.
+typedef struct {
+    bool32  valid;
+    s3d_mat4 view;        // set by s3d_set_view_matrix / setup_3d_projection
+    s3d_mat4 projection;
+    float32 fov_radians;   // vertical FOV in radians (matches s3d_camera.fov)
+    float32 near_plane, far_plane;
+} s3d_camera_state;
+
+void      s3d_set_view_matrix(s3d_renderer* renderer, s3d_mat4 view);
+void      s3d_get_camera_state(s3d_renderer* renderer, s3d_camera_state* out);
+s3d_vec3  s3d_screen_to_world_ray(s3d_renderer* renderer, float32 screen_x, float32 screen_y);
+
 // Stats
 typedef struct {
     uint32 draw_calls;

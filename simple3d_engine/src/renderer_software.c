@@ -238,6 +238,13 @@ void s3d_setup_3d_projection(s3d_renderer* renderer, s3d_camera* camera, float32
     camera->proj_matrix = s3d_mat4_perspective(camera->fov, aspect_ratio,
                                                camera->near_plane, camera->far_plane);
     camera->view_matrix = s3d_mat4_look_at(camera->position, camera->target, camera->up);
+    // Remember the camera so world->screen projection keeps working during HUD.
+    renderer->camera.valid = S3D_TRUE;
+    renderer->camera.view = camera->view_matrix;
+    renderer->camera.projection = camera->proj_matrix;
+    renderer->camera.fov_radians = camera->fov;
+    renderer->camera.near_plane = camera->near_plane;
+    renderer->camera.far_plane = camera->far_plane;
     s3d_load_matrix(renderer, s3d_mat4_multiply(camera->proj_matrix, camera->view_matrix));
 }
 
@@ -753,4 +760,61 @@ void s3d_draw_text(s3d_renderer* renderer, const char* text, float32 x, float32 
     if (renderer->type == S3D_RENDERER_SOFTWARE) {
         s3d__draw_text_software(renderer, text, x, y, scale, color);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Camera state + projection helpers (backend-independent, lives here so both
+// software and GL renderers share it via renderer_common.h struct).
+// ---------------------------------------------------------------------------
+void s3d_set_view_matrix(s3d_renderer* renderer, s3d_mat4 view) {
+    if (!renderer) return;
+    renderer->camera.view = view;
+    renderer->camera.valid = S3D_TRUE;
+}
+
+void s3d_get_camera_state(s3d_renderer* renderer, s3d_camera_state* out) {
+    if (out) *out = renderer ? renderer->camera : (s3d_camera_state){0};
+}
+
+bool32 s3d_project_vertex(s3d_renderer* renderer, s3d_vec3 world_pos, s3d_vec2* out_screen) {
+    if (!renderer || !out_screen || !renderer->camera.valid) return S3D_FALSE;
+    const s3d_mat4* v = &renderer->camera.view;
+    const s3d_mat4* p = &renderer->camera.projection;
+    float32 x = world_pos.x, y = world_pos.y, z = world_pos.z;
+    // eye = view * world
+    float32 ex = v->m[0]*x + v->m[4]*y + v->m[8]*z  + v->m[12];
+    float32 ey = v->m[1]*x + v->m[5]*y + v->m[9]*z  + v->m[13];
+    float32 ez = v->m[2]*x + v->m[6]*y + v->m[10]*z + v->m[14];
+    // clip = proj * eye
+    float32 cw = p->m[3]*ex + p->m[7]*ey + p->m[11]*ez + p->m[15];
+    if (cw <= 1e-6f) return S3D_FALSE; // behind camera
+    float32 inv_w = 1.0f / cw;
+    float32 ndc_x = (p->m[0]*ex + p->m[4]*ey + p->m[8]*ez  + p->m[12]) * inv_w;
+    float32 ndc_y = (p->m[1]*ex + p->m[5]*ey + p->m[9]*ez  + p->m[13]) * inv_w;
+    int32 w = SW(renderer)->framebuffer.width;
+    int32 h = SW(renderer)->framebuffer.height;
+    out_screen->x = (ndc_x * 0.5f + 0.5f) * (float32)w;
+    out_screen->y = (0.5f - ndc_y * 0.5f) * (float32)h;
+    return S3D_TRUE;
+}
+
+// Unproject a screen pixel into a world-space ray direction (origin = camera).
+s3d_vec3 s3d_screen_to_world_ray(s3d_renderer* renderer, float32 screen_x, float32 screen_y) {
+    s3d_vec3 dir = {0, 0, -1};
+    if (!renderer || !renderer->camera.valid) return dir;
+    int32 w = SW(renderer)->framebuffer.width;
+    int32 h = SW(renderer)->framebuffer.height;
+    float32 ndc_x = (screen_x / (float32)w) * 2.0f - 1.0f;
+    float32 ndc_y = 1.0f - (screen_y / (float32)h) * 2.0f;
+    float32 aspect = (float32)w / (float32)h;
+    float32 tan_half = tanf(renderer->camera.fov_radians * 0.5f);
+    // Camera space (right-handed: -Z forward, +X right, +Y up)
+    s3d_vec3 cs = { ndc_x * tan_half * aspect, ndc_y * tan_half, -1.0f };
+    // Rotate by inverse view rotation: for an orthonormal view matrix the
+    // inverse of the 3x3 part is its transpose.
+    const s3d_mat4* v = &renderer->camera.view;
+    dir.x = v->m[0]*cs.x + v->m[1]*cs.y + v->m[2]*cs.z;
+    dir.y = v->m[4]*cs.x + v->m[5]*cs.y + v->m[6]*cs.z;
+    dir.z = v->m[8]*cs.x + v->m[9]*cs.y + v->m[10]*cs.z;
+    return dir;
 }

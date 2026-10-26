@@ -65,6 +65,9 @@ void s3d__input_handle_event(const s3d_event* e) {
             if (e->mouse_button.button >= 0 && e->mouse_button.button <= 2)
                 g_mouse_buttons_current[e->mouse_button.button] = S3D_FALSE;
             break;
+        case S3D_EVENT_MOUSE_WHEEL:
+            g_mouse_wheel += e->wheel.offset;
+            break;
         case S3D_EVENT_TOUCH_BEGIN:
             if (e->touch.id >= 0 && e->touch.id < MAX_TOUCHES) {
                 g_touches[e->touch.id].position.x = e->touch.x;

@@ -30,6 +30,10 @@ struct s3d_renderer {
 
     s3d_texture* bound_texture;   // currently bound texture (software: sampled directly)
 
+    // Camera state kept between frames so world->screen projection works even
+    // after the game switches to an ortho matrix for HUD drawing.
+    s3d_camera_state camera;
+
     s3d_render_stats stats;
 };
 

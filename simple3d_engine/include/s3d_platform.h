@@ -48,6 +48,7 @@ typedef enum {
     S3D_EVENT_TOUCH_BEGIN,
     S3D_EVENT_TOUCH_MOVE,
     S3D_EVENT_TOUCH_END,
+    S3D_EVENT_MOUSE_WHEEL,
 } s3d_event_type;
 
 // Keyboard keys
@@ -72,6 +73,7 @@ typedef enum {
     S3D_KEY_F1, S3D_KEY_F2, S3D_KEY_F3, S3D_KEY_F4, S3D_KEY_F5,
     S3D_KEY_F6, S3D_KEY_F7, S3D_KEY_F8, S3D_KEY_F9, S3D_KEY_F10,
     S3D_KEY_F11, S3D_KEY_F12,
+    S3D_KEY_LSHIFT, S3D_KEY_RSHIFT,
 } s3d_key;
 
 // Mouse buttons
@@ -90,6 +92,7 @@ typedef struct {
         struct { s3d_mouse_button button; } mouse_button;
         struct { int32 width, height; } resize;
         struct { float32 x, y; int32 id; } touch;
+        struct { float32 offset; } wheel;
     };
 } s3d_event;
 

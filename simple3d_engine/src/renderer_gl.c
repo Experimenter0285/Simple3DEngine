@@ -250,6 +250,14 @@ void s3d_setup_3d_projection(s3d_renderer* renderer, s3d_camera* camera, float32
     glLoadMatrixf(camera->view_matrix.m);
     renderer->current_matrix = s3d_mat4_identity();
     renderer->matrix_stack_top = 0;
+    // Remember the camera for world->screen projection (shared helper in
+    // renderer_software.c works off this state for both backends).
+    renderer->camera.valid = S3D_TRUE;
+    renderer->camera.view = camera->view_matrix;
+    renderer->camera.projection = camera->proj_matrix;
+    renderer->camera.fov_radians = camera->fov;
+    renderer->camera.near_plane = camera->near_plane;
+    renderer->camera.far_plane = camera->far_plane;
 }
 
 void s3d_setup_2d_projection(s3d_renderer* renderer, int32 width, int32 height) {
