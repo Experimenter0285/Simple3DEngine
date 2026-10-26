@@ -113,6 +113,11 @@ void s3d_clear_depth(s3d_renderer* renderer);
 // Blending
 void s3d_enable_blending(s3d_renderer* renderer, bool32 enable);
 
+// Built-in bitmap font (8x8, ASCII 32..126). Works on both renderers:
+// software -> direct pixel blit; OpenGL -> generates a texture atlas once.
+void s3d_draw_text(s3d_renderer* renderer, const char* text, float32 x, float32 y,
+                   float32 scale, s3d_color color);
+
 // Stats
 typedef struct {
     uint32 draw_calls;

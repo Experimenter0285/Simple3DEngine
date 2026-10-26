@@ -2,6 +2,8 @@
 // Pure software rendering for old PCs without OpenGL support
 
 #include "../include/s3d_renderer.h"
+#include "s3d_internal.h"
+#include "s3d_font_8x8.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
