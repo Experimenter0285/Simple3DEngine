@@ -58,6 +58,9 @@ struct s3d_voxel_game {
     int32 fps_frames;
     float fps_value;
 
+    // Panorama UI (HTML/CSS overlay), optional
+    s3d_html_ui* ui;
+
     // Auto-pilot for headless screenshots
     bool32 autopilot;
     float auto_t;
@@ -211,8 +214,6 @@ static void update_player(s3d_voxel_game* g, float dt) {
 }
 
 static void update_selection(s3d_voxel_game* g) {
-    s3d_camera_state cs; s3d_get_camera_state(renderer, &cs);
-    S3D_UNUSED(cs);
     // Ray from eye along view direction derived from yaw/pitch
     float cp = cosf(g->pitch);
     s3d_vec3 dir = { -sinf(g->yaw) * cp, sinf(g->pitch), -cosf(g->yaw) * cp };
@@ -326,25 +327,7 @@ static void handle_hotbar_keys(s3d_voxel_game* g) {
 
 static const char* g_tool_names[3] = { "Break/Place", "Sphere", "Cube" };
 
-// Push live stats into the HTML UI document (CSS-styled panorama overlay).
-static void sync_html_ui(s3d_voxel_game* g) {
-    s3d_script_context* ctx = s3d_get_main_script_context();
-    if (!ctx || !s3d_html_ui_is_loaded(ctx)) return;
-    char buf[192];
-    snprintf(buf, sizeof(buf), "%.0f", g->fps_value);
-    s3d_html_ui_set_text(ctx, "#fps", buf);
-    snprintf(buf, sizeof(buf), "%.1f %.1f %.1f", g->px, g->py, g->pz);
-    s3d_html_ui_set_text(ctx, "#pos", buf);
-    snprintf(buf, sizeof(buf), "%d", s3d_voxel_triangle_count(g->world));
-    s3d_html_ui_set_text(ctx, "#tris", buf);
-    s3d_html_ui_set_text(ctx, "#status", g->status_line);
-    s3d_html_ui_set_text(ctx, "#mode", g->fly_mode ? "FLY" : "WALK");
-    s3d_html_ui_set_text(ctx, "#sel",
-        g->has_target ? block_name(s3d_voxel_get(g->world, g->sel_x, g->sel_y, g->sel_z)) : "-");
-    s3d_html_ui_set_text(ctx, "#tool", g_tool_names[g->tool]);
-}
-
-// ---------------------------------------------------------------------------
+// Human-readable name of a block id (also used by the HUD).
 static const char* block_name(uint8 b) {
     switch (b) {
         case S3D_BLOCK_GRASS: return "Grass";
@@ -359,6 +342,24 @@ static const char* block_name(uint8 b) {
     }
 }
 
+// Push live stats into the HTML UI document (CSS-styled panorama overlay).
+static void sync_html_ui(s3d_voxel_game* g) {
+    if (!g->ui) return;
+    char buf[192];
+    snprintf(buf, sizeof(buf), "%.0f", g->fps_value);
+    s3d_html_ui_set_text(g->ui, "#fps", buf);
+    snprintf(buf, sizeof(buf), "%.1f %.1f %.1f", g->px, g->py, g->pz);
+    s3d_html_ui_set_text(g->ui, "#pos", buf);
+    snprintf(buf, sizeof(buf), "%d", s3d_voxel_triangle_count(g->world));
+    s3d_html_ui_set_text(g->ui, "#tris", buf);
+    s3d_html_ui_set_text(g->ui, "#status", g->status_line);
+    s3d_html_ui_set_text(g->ui, "#mode", g->fly_mode ? "FLY" : "WALK");
+    s3d_html_ui_set_text(g->ui, "#sel",
+        g->has_target ? block_name(s3d_voxel_get(g->world, g->sel_x, g->sel_y, g->sel_z)) : "-");
+    s3d_html_ui_set_text(g->ui, "#tool", g_tool_names[g->tool]);
+}
+
+// ---------------------------------------------------------------------------
 static void draw_wire_cube(s3d_renderer* r, int32 x, int32 y, int32 z, s3d_color col) {
     float a = (float)x, b = (float)y, c = (float)z, e = a + 1.0f, f = b + 1.0f, k = c + 1.0f;
     s3d_vec3 p[8] = {
@@ -413,12 +414,18 @@ void s3d_voxel_game_frame(s3d_voxel_game* g, float dt) {
     if (!g || !g->engine) return;
     s3d_renderer* renderer = g->engine->renderer;
     int32 w, h; s3d_get_window_size(g->engine->window, &w, &h);
-    if (w <= 0) w = 320;
-    if (h <= 0) h = 240;
+    if (w <= 0) w = 640;
+    if (h <= 0) h = 480;
 
     // FPS counter
     g->fps_timer += dt; g->fps_frames++;
     if (g->fps_timer >= 0.5f) { g->fps_value = g->fps_frames / g->fps_timer; g->fps_timer = 0; g->fps_frames = 0; }
+
+    // Panorama UI: route mouse to the overlay first (buttons eat clicks).
+    if (g->ui) {
+        s3d_html_ui_handle_input_at(g->ui, s3d_get_mouse_position(),
+                                    s3d_is_mouse_pressed(S3D_MOUSE_LEFT));
+    }
 
     // Mouse look (delta from input system)
     s3d_vec2 md = s3d_get_mouse_delta();
@@ -437,7 +444,7 @@ void s3d_voxel_game_frame(s3d_voxel_game* g, float dt) {
     s3d_voxel_update(g->world, cam_pos, dt);
 
     update_selection(g);
-    handle_mouse_actions(g);
+    if (!g->ui || !s3d_html_ui_consumes_mouse(g->ui)) handle_mouse_actions(g);
     sync_html_ui(g);
 
     // ---- Render ----
@@ -471,11 +478,25 @@ void s3d_voxel_game_frame(s3d_voxel_game* g, float dt) {
     draw_hud(g, renderer, w, h);
 
     // Panorama UI layer (HTML/CSS) composited over the 3D scene.
-    s3d_html_ui_render(renderer, w, h);
+    if (g->ui) s3d_html_ui_render(g->ui, renderer, w, h);
 
     s3d_end_frame(g->engine);
 }
 
 const char* s3d_voxel_game_status(const s3d_voxel_game* g) {
     return g ? g->status_line : "";
+}
+
+// Attach a Panorama UI (HTML/CSS) overlay to the game; pass NULL to detach.
+void s3d_voxel_game_set_html_ui(s3d_voxel_game* g, s3d_html_ui* ui) {
+    if (!g) return;
+    g->ui = ui;
+}
+
+// Load the built-in HTML/CSS HUD template and attach it. Returns S3D_TRUE on success.
+bool32 s3d_voxel_game_enable_default_ui(s3d_voxel_game* g) {
+    if (!g) return S3D_FALSE;
+    if (g->ui) return S3D_TRUE;
+    g->ui = s3d_html_ui_load_default();
+    return g->ui ? S3D_TRUE : S3D_FALSE;
 }

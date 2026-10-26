@@ -154,9 +154,15 @@ s3d_window* s3d_create_window(const s3d_window_params* params) {
     if (try_create_x11(w, params)) return w;
 #endif
 
-    // Headless fallback: lets games/tests run on machines without any display server
-    // (also used for automated CI runs with S3D_HEADLESS=1).
+    // Headless fallback: lets games/tests run on machines without any display
+    // server. We still allocate a backing surface so the software renderer can
+    // draw into it and tests can grab screenshots (build/frame.ppm).
     w->headless = S3D_TRUE;
+    if (params->renderer_hint != S3D_RENDERER_OPENGL_1_0 &&
+        params->renderer_hint != S3D_RENDERER_OPENGL_ES_1_0) {
+        w->pixels = calloc((size_t)w->width * (size_t)w->height, 4);
+        w->pitch = w->width * 4;
+    }
     fprintf(stderr, "Simple3DEngine: no display found, running headless (%dx%d)\n",
             w->width, w->height);
     return w;
@@ -174,9 +180,8 @@ void s3d_destroy_window(s3d_window* window) {
         if (window->x_win) XDestroyWindow(dpy, (Window)window->x_win);
         XCloseDisplay(dpy);
     }
-#else
-    free(window->pixels);
 #endif
+    free(window->pixels);
     free(window);
 }
 
@@ -205,17 +210,14 @@ bool32 s3d__window_is_opengl(s3d_window* window) {
 
 void* s3d__window_get_pixels(s3d_window* window, int32* w, int32* h, int32* pitch) {
     if (!window || window->opengl) return NULL;
-#ifdef S3D_HAS_X11
     if (window->pixels) {
         if (w) *w = window->width;
         if (h) *h = window->height;
         if (pitch) *pitch = window->pitch;
         return window->pixels;
     }
-#else
     S3D_UNUSED(w); S3D_UNUSED(h); S3D_UNUSED(pitch);
-#endif
-    return NULL; // headless -> renderer keeps its own offscreen framebuffer
+    return NULL; // GL windows / no backing surface
 }
 
 void s3d__window_update(s3d_window* window) { S3D_UNUSED(window); }

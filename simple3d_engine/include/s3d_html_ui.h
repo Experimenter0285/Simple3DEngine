@@ -88,11 +88,23 @@ void s3d_html_ui_render_active(s3d_renderer* renderer, int32 vp_w, int32 vp_h);
 // Hide/show the native fallback HUD while an HTML UI is visible.
 void         s3d_html_ui_set_native_hud_visible(bool32 visible);
 bool32       s3d_html_ui_native_hud_visible(void);
+// Save the rasterized UI layer as a binary PPM file (debug/tests).
+bool32       s3d_html_ui_save_ppm(const s3d_html_ui* ui, const char* path);
 // Register a C callback for clicks on a clickable element ("#id" or ".class").
 typedef void (*s3d_html_ui_click_fn)(const char* id, void* user);
 void s3d_html_ui_on_click(const char* selector, s3d_html_ui_click_fn fn, void* user);
 // Route engine mouse input to the UI (call once per frame before rendering).
 void s3d_html_ui_handle_input(s3d_html_ui* ui);
+
+// Explicit hit-test + click dispatch with current mouse state. If the point
+// lands on a clickable element, the click is consumed (returns S3D_TRUE) so
+// the game can skip its own mouse handling this frame. Fires callbacks
+// registered via s3d_html_ui_on_click and Lua "onclick" handlers.
+bool32 s3d_html_ui_handle_input_at(s3d_html_ui* ui, s3d_vec2 mouse_pos, bool32 pressed);
+
+// S3D_TRUE while the last handle_input_at() press was inside a clickable
+// element (mouse is "over the UI").
+bool32 s3d_html_ui_consumes_mouse(const s3d_html_ui* ui);
 
 #ifdef __cplusplus
 }
