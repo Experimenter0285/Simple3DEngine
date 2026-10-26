@@ -64,7 +64,9 @@ struct s3d_html_ui {
     float32 vp_w, vp_h;
     uint32* pixels;         // RGBA8888 layer
     int32 pw, ph;
+    s3d_texture* tex;       // cached composite texture (resized only on layout change)
     bool32 dirty;
+    bool32 pressed_prev;    // previous frame mouse state (for edge detection)
     bool32 consumes_mouse;
     char hovered_id[64];
     // Global click registry (selector -> fn)
@@ -553,6 +555,7 @@ s3d_html_ui* s3d_html_ui_load(const char* html) {
 void s3d_html_ui_destroy(s3d_html_ui* ui) {
     if (!ui) return;
     if (g_attached_ui == ui) g_attached_ui = NULL;
+    if (ui->tex) { s3d_destroy_texture(ui->tex); ui->tex = NULL; }
     free(ui->pixels);
     free(ui);
 }
@@ -641,8 +644,10 @@ bool32 s3d_html_ui_remove_class(s3d_html_ui* ui, const char* selector, const cha
         while (*c == ' ') c++;
         const char* e = c; while (*e && *e != ' ') e++;
         if (!((size_t)(e - c) == want && !strncmp(c, cls, want))) {
-            if (out[0] && strlen(out) + (size_t)(e - c) + 2 < MAX_CLASS) { strcat(out, " "); strncat(out, c, (size_t)(e - c)); }
-            else if (!out[0]) { strncat(out, c, (size_t)(e - c) < MAX_CLASS - 1 ? (size_t)(e - c) : MAX_CLASS - 1); }
+            size_t len = (size_t)(e - c);
+            if (len >= MAX_CLASS) len = MAX_CLASS - 1; // clamp: never overflow `out`
+            if (out[0] && strlen(out) + len + 2 < MAX_CLASS) { strcat(out, " "); strncat(out, c, len); }
+            else if (!out[0]) { strncat(out, c, len); }
         }
         c = e;
     }
@@ -663,23 +668,23 @@ void s3d_html_ui_render(s3d_html_ui* ui, s3d_renderer* renderer, int32 vp_w, int
     if (ui->pw != vp_w || ui->ph != vp_h || ui->dirty) {
         do_layout(ui, vp_w, vp_h);
         rasterize(ui);
+        // Layer size changed -> rebuild the cached composite texture.
+        if (ui->tex) { s3d_destroy_texture(ui->tex); ui->tex = NULL; }
     }
     if (!ui->pixels) return;
     // Composite as a single textured fullscreen quad (ARGB byte order matches
-    // s3d_texture RGBA data used by both backends).
-    static s3d_texture* tex = NULL;
-    if (tex) { s3d_destroy_texture(tex); tex = NULL; }
-    tex = s3d_create_texture(vp_w, vp_h, (const uint8*)ui->pixels);
-    if (!tex) return;
+    // s3d_texture RGBA data used by both backends). The texture is cached and
+    // only re-uploaded when the layer is re-rasterized.
+    if (!ui->tex)
+        ui->tex = s3d_create_texture(vp_w, vp_h, (const uint8*)ui->pixels);
+    if (!ui->tex) return;
     s3d_setup_2d_projection(renderer, vp_w, vp_h);
     s3d_enable_depth_test(renderer, S3D_FALSE);
     s3d_enable_blending(renderer, S3D_TRUE);
-    s3d_draw_textured_rect(renderer, (s3d_rect){0, 0, (float32)vp_w, (float32)vp_h}, tex,
+    s3d_draw_textured_rect(renderer, (s3d_rect){0, 0, (float32)vp_w, (float32)vp_h}, ui->tex,
                            (s3d_color){1, 1, 1, 1});
     s3d_enable_blending(renderer, S3D_FALSE);
     s3d_enable_depth_test(renderer, S3D_TRUE);
-    s3d_destroy_texture(tex);
-    tex = NULL;
 }
 
 const char* s3d_html_ui_hit_test(s3d_html_ui* ui, float32 x, float32 y) {
@@ -713,8 +718,13 @@ void s3d_html_ui_on_click(const char* selector, s3d_html_ui_click_fn fn, void* u
 
 bool32 s3d_html_ui_handle_input_at(s3d_html_ui* ui, s3d_vec2 mouse_pos, bool32 pressed) {
     if (!ui) return S3D_FALSE;
+    // Fire on the press *edge* only: while the button is held down the engine
+    // reports "pressed" every frame, which would repeat-trigger clicks.
+    bool32 just_pressed = pressed && !ui->pressed_prev;
+    ui->pressed_prev = pressed;
+
     const char* hit = s3d_html_ui_hit_test(ui, mouse_pos.x, mouse_pos.y);
-    if (hit && pressed) {
+    if (hit && just_pressed) {
         ui->consumes_mouse = S3D_TRUE;
         snprintf(ui->hovered_id, sizeof(ui->hovered_id), "%s", hit);
         for (int32 i = 0; i < ui->click_count; i++) {

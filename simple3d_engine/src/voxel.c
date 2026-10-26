@@ -10,7 +10,7 @@
 #include <string.h>
 #include <math.h>
 
-#define MAX_VERTS_PER_CHUNK   4096u            // hard cap; dense chunks clip extra faces
+#define MAX_VERTS_PER_CHUNK   12288u           // hard cap (must be < 65536: uint16 indices); dense chunks clip extra faces
 #define MAX_IDX_PER_CHUNK     (MAX_VERTS_PER_CHUNK / 2 * 3)
 #define EDIT_TABLE_CAP        8192             // edited columns kept in memory
 #define MESH_TABLE_CAP        121              // prime -> good open-addressing spread
@@ -23,12 +23,13 @@ typedef struct {                 // one override entry per edited (x,z) column
     bool32 used;
 } edit_col;
 
-typedef struct {                 // mesh cache entry for a chunk
+typedef struct mesh_slot {           // mesh cache entry for a chunk
     int32 cx, cz;
     s3d_mesh* opaque;
     s3d_mesh* transp;
     uint32 tris;
     bool32 used;
+    bool32 dirty;                // edited -> rebuild on next update pass
 } mesh_slot;
 
 struct s3d_voxel_world {
@@ -187,6 +188,9 @@ static bool32 edit_get(const s3d_voxel_world* cw, int32 x, int32 y, int32 z, uin
 
 // ---------------------------------------------------------------------------
 // Procedural block query: pure function of (world, x, y, z) + edits.
+// NOTE: the tree canopy loop below calls terrain_height_at() for every
+// neighbour column, so this function is *not* cheap - never call it from
+// inner loops without caching (see s3d_voxel_set / chunk border logic).
 static uint8 gen_block_at(const s3d_voxel_world* w, int32 x, int32 y, int32 z) {
     if (y < 0 || y >= w->height) return 0;
     if (!in_bounds_gen(w, x, z)) return 0;
@@ -227,10 +231,28 @@ uint8 s3d_voxel_get(const s3d_voxel_world* w, int32 x, int32 y, int32 z) {
     return gen_block_at(w, x, y, z);
 }
 
+// ---------------------------------------------------------------------------
+static struct mesh_slot* slot_find(s3d_voxel_world* w, int32 cx, int32 cz, bool32 create);
+
 void s3d_voxel_set(s3d_voxel_world* w, int32 x, int32 y, int32 z, uint8 block) {
     if (!w || y < 0 || y >= w->height) return;
     if (!w->infinite && (x < w->fx0 || x > w->fx1 || z < w->fz0 || z > w->fz1)) return;
     edit_set(w, x, y, z, block);
+    // Mark affected chunk meshes dirty instead of rebuilding synchronously:
+    // re-meshing a whole chunk inside an edit loop is O(N^2). The next
+    // s3d_voxel_update() rebuilds all dirty chunks. A block on a chunk border
+    // can also change hidden faces of the neighbour chunk.
+    static const int32 off[4][2] = { {0, 0}, {-S3D_CHUNK_SIZE, 0}, {S3D_CHUNK_SIZE, 0}, {0, S3D_CHUNK_SIZE} };
+    for (int i = 0; i < 4; i++) {
+        int32 ox = x + off[i][0], oz = z + off[i][1];
+        // For negative coords C's % is remainder, not modulo: renormalize.
+        int32 mx = ox % S3D_CHUNK_SIZE; if (mx < 0) mx += S3D_CHUNK_SIZE;
+        int32 mz = oz % S3D_CHUNK_SIZE; if (mz < 0) mz += S3D_CHUNK_SIZE;
+        int32 base_x = ox - mx;
+        int32 base_z = oz - mz;
+        mesh_slot* m = slot_find(w, base_x, base_z, S3D_FALSE);
+        if (m) m->dirty = S3D_TRUE;
+    }
 }
 
 void s3d_voxel_for_each_in_aabb(s3d_voxel_world* w, int32 x0, int32 y0, int32 z0,
@@ -384,6 +406,18 @@ void s3d_voxel_rebuild_mesh(s3d_voxel_world* w) {
             if (w->meshes[i].used) slot_rebuild(w, &w->meshes[i]);
         return;
     }
+    int32 span = (w->fx1 - w->fx0 + 1) * (w->fz1 - w->fz0 + 1);
+    if (span > 4096) {
+        // Large finite world: re-meshing everything synchronously would stall
+        // the frame. Defer to the streaming pass instead (budgeted rebuild of
+        // dirty chunks happens there).
+        for (int32 cx = w->fx0; cx <= w->fx1; cx += S3D_CHUNK_SIZE)
+        for (int32 cz = w->fz0; cz <= w->fz1; cz += S3D_CHUNK_SIZE) {
+            mesh_slot* m = slot_find(w, cx, cz, S3D_FALSE);
+            if (m) m->dirty = S3D_TRUE;
+        }
+        return;
+    }
     for (int32 cx = w->fx0; cx <= w->fx1; cx += S3D_CHUNK_SIZE)
     for (int32 cz = w->fz0; cz <= w->fz1; cz += S3D_CHUNK_SIZE) {
         mesh_slot* m = slot_find(w, cx, cz, S3D_TRUE);
@@ -399,6 +433,16 @@ void s3d_voxel_update(s3d_voxel_world* w, s3d_vec3 cam, float32 dt) {
     int32 pcx = (int32)floorf(cam.x) / S3D_CHUNK_SIZE;
     int32 pcz = (int32)floorf(cam.z) / S3D_CHUNK_SIZE;
     int32 R = w->load_radius;
+
+    // Player edits first: rebuild dirty chunks. This pass is *not* budgeted,
+    // so a single frame can never show stale geometry after an edit/undo.
+    for (uint32 i = 0; i < MESH_TABLE_CAP; i++) {
+        mesh_slot* m = &w->meshes[i];
+        if (m->used && m->dirty) {
+            slot_rebuild(w, m);
+            m->dirty = S3D_FALSE;
+        }
+    }
 
     for (int ring = 0; ring <= R; ring++) {
         for (int dx = -ring; dx <= ring; dx++)
